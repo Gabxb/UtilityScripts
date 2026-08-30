@@ -36,10 +36,12 @@ TRACKED=(
   "scripts/probe_nodes.py"
   "scripts/github-ssh-push.sh"
   "scripts/auto_sync.sh"
+  "scripts/gen_readme.sh"
 )
 
 DRY_RUN=0
 WITH_REPORT=0
+GEN_README=1
 LOOP_SECONDS=0
 INSTALL_CRON=""
 RUN_PIPELINE=""
@@ -68,6 +70,7 @@ usage() {
   --uninstall-cron     移除本脚本的 crontab 条目
   --run-pipeline "源…" 同步前先跑一次订阅流水线重新生成 sub.txt
   --with-report        同时提交 sub_report.tsv（内含真实出口 IP，公开仓库慎用）
+  --no-readme          跳过 README.md 自动刷新（默认每次同步前刷新）
   --dry-run            只打印将要执行的操作，不提交不推送
   -h, --help           显示帮助
 
@@ -86,6 +89,7 @@ parse_args() {
       --uninstall-cron) INSTALL_CRON="remove"; shift ;;
       --run-pipeline)  RUN_PIPELINE="${2:?缺少订阅来源}"; shift 2 ;;
       --with-report)   WITH_REPORT=1; shift ;;
+      --no-readme)     GEN_README=0; shift ;;
       --dry-run)       DRY_RUN=1; shift ;;
       -h | --help)     usage; exit 0 ;;
       *)               die "未知参数：$1（-h 查看帮助）" ;;
@@ -282,8 +286,26 @@ loop_forever() {
   done
 }
 # ---------------------------------------------------------------- 主流程
+# README 里的环境信息由 gen_readme.sh 实时采集，内容无实质变化时它不会动文件，
+# 所以这里每次都跑也不会产生只有时间戳差异的空洞提交
+refresh_readme() {
+  local gen="${REPO_DIR}/scripts/gen_readme.sh"
+  [[ -x "$gen" ]] || return 0
+  if (( DRY_RUN )); then
+    log "[dry-run] 将刷新 README.md"
+    return 0
+  fi
+  local out
+  if out=$(bash "$gen" 2>&1); then
+    log "README: $(printf '%s' "$out" | head -1)"
+  else
+    warn "README 生成失败：$(printf '%s' "$out" | tail -1)"
+  fi
+}
+
 sync_once() {
   preflight
+  if (( GEN_README )); then refresh_readme; fi
   [[ -n "$RUN_PIPELINE" ]] && run_pipeline "$RUN_PIPELINE"
   sync_with_remote
   commit_and_push
