@@ -43,17 +43,37 @@ echo "Asia/Shanghai" > /etc/timezone
 | 磁盘 | 20 GB 总 / 4.1 GB 已用 / 15 GB 可用（22%） |
 ### 网络
 
-**出口（公网）**
+本机为**双线分流**：访问境内目标与境外目标走两条不同的出口线路，分流由上游网关决定（本机路由表只有一个默认网关 `192.168.16.1`，无法自行选择线路）。
+
+**境内线路出口** —— 由 `cip.cc` / `myip.ipip.net` / `ip.3322.net` 三源一致确认
+
+| 项目 | 值 |
+|---|---|
+| 出口 IP | `123.56.157.253` |
+| 归属地 | 中国 北京 北京 |
+| 运营商 | 阿里云（阿里云 BGP 数据中心） |
+| 查询命令 | `curl cip.cc` |
+
+**境外线路出口** —— 由 `api.ipify.org` / `icanhazip.com` / `ip.sb` 三源一致确认
 
 | 项目 | 值 |
 |---|---|
 | 出口 IP | `42.200.172.140` |
 | 反向解析 | `42-200-172-140.static.imsbiz.com` |
 | 归属地 | 中国香港 · Central and Western · Central |
-| ISP | PCCW IMSBiz |
+| ISP | PCCW IMSBiz / Netvigator |
 | 组织 | Hong Kong Telecommunications (HKT) Limited |
 | AS | AS4760 HKT Limited |
 | IP 时区 | Asia/Hong_Kong |
+| 查询命令 | `curl https://api.ip.sb/geoip` |
+
+**实测延迟对照**（TCP 握手时间，印证分流真实存在）
+
+| 目标 | 线路 | TCP 握手 |
+|---|---|---|
+| www.baidu.com | 境内 | 0.031 s |
+| www.aliyun.com | 境内 | 0.039 s |
+| github.com | 境外 | 0.032 s |
 
 **内网**
 
@@ -74,10 +94,12 @@ echo "Asia/Shanghai" > /etc/timezone
 | TCP 22（GitHub） | **被拦截** | `kex_exchange_identification: Connection closed`，改走 `ssh.github.com:443` |
 | TCP connect | **结果不可信** | 保留地址 `192.0.2.1:12345` 也返回连接成功，存在透明代理应答 SYN |
 | HTTPS 443 | 正常 | 任意端口出站可用 |
-| google.com / youtube.com | 可达 | HTTP 200，约 0.8 s —— 说明**不在 GFW 内** |
+| google.com / youtube.com | 可达 | HTTP 200，约 0.8 s（走境外线路），偶发 SSL 波动 |
 | facebook.com / twitter.com | 超时 | 环境自身出站策略，与 GFW 无关 |
 
 因此节点可用性只能通过**完整协议握手 + 真实 HTTP 请求**验证，ICMP 与 TCP 层探测在此环境均无效。
+
+注意：虽然本机存在境内线路，但**无法用它测试 GFW 封锁** —— 分流由上游按目标 IP 决定，境外节点的连接必然走香港线路，探活结果反映的是香港到节点的连通性。
 
 ### 已安装工具
 
@@ -142,7 +164,8 @@ bash scripts/auto_sync.sh --dry-run           # 预演，不提交
 
 ## 注意事项
 
-- 探活结果反映**本机出口（香港）**到节点的连通性，不代表中国大陆可达性
+- 探活结果反映**境外线路出口（香港 42.200.172.140）**到节点的连通性，不代表中国大陆可达性
+- 本机虽有境内线路（北京 123.56.157.253），但分流由上游按目标 IP 决定，无法用于测试 GFW
 - 并发上限为 3，超过后代理连接会被关闭，导致健康节点被误判
 - 回显服务必须使用 HTTPS，明文 HTTP 会被部分节点出口拦截返回 400 页面
 - `sub_report.tsv` 含节点真实出口 IP，默认不纳入版本控制
