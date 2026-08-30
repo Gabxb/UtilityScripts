@@ -28,6 +28,7 @@ readonly LOG_FILE="${AUTO_SYNC_LOG:-${REPO_DIR}/.auto_sync.log}"
 # 出口 IP，推到公开仓库等于公开落地服务器，需要时用 --with-report 显式加上
 TRACKED=(
   ".gitignore"
+  "README.md"
   "sub.txt"
   "sub_alive.txt"
   "scripts/subs_pipeline.py"
