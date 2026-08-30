@@ -27,6 +27,7 @@ readonly LOG_FILE="${AUTO_SYNC_LOG:-${REPO_DIR}/.auto_sync.log}"
 # 要同步的文件白名单。sub_report.tsv 默认不含 —— 它记录了每个节点的真实
 # 出口 IP，推到公开仓库等于公开落地服务器，需要时用 --with-report 显式加上
 TRACKED=(
+  ".gitignore"
   "sub.txt"
   "sub_alive.txt"
   "scripts/subs_pipeline.py"
