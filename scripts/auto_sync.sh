@@ -53,12 +53,35 @@ else
   readonly C_RED="" C_GRN="" C_YLW="" C_CYN="" C_RST=""
 fi
 
-# 同时写终端与日志，cron 下无终端也能留痕
+# 同时写终端与日志，cron 下无终端也能留痕。
+#
+# 但 crontab 那行本身就带 >> $LOG_FILE，此时 tee 与重定向指向同一个文件，
+# 每条日志会落盘两遍 —— 实测 290 行里只有 164 行是唯一的。
+# 所以先比较 stdout 与日志文件的 inode，已经是同一个文件就不再 tee。
+# 不能直接 stat /dev/stdout：命令替换 $(...) 本身会把 stdout 接成管道，
+# 探到的永远是那个管道（device 12 pipefs）而不是真正的输出目标。
+# 先把 fd 1 复制到 fd 9，子进程继承后再 stat /proc/self/fd/9 才能看到原始目标
+_same_file() {
+  local a b
+  exec 9>&1 || return 1
+  a=$(stat -Lc '%d:%i' /proc/self/fd/9 2>/dev/null) || true
+  exec 9>&-
+  b=$(stat -Lc '%d:%i' "$LOG_FILE" 2>/dev/null) || true
+  [[ -n "$a" && "$a" == "$b" ]]
+}
+mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+touch "$LOG_FILE" 2>/dev/null || true
+if _same_file; then
+  _emit() { cat; }            # stdout 已重定向到日志文件，直接输出即可
+else
+  _emit() { tee -a "$LOG_FILE"; }
+fi
+
 _stamp() { date '+%Y-%m-%d %H:%M:%S'; }
-log()  { printf '%s[%s INFO]%s %s\n' "$C_CYN" "$(_stamp)" "$C_RST" "$*" | tee -a "$LOG_FILE"; }
-ok()   { printf '%s[%s  OK ]%s %s\n' "$C_GRN" "$(_stamp)" "$C_RST" "$*" | tee -a "$LOG_FILE"; }
-warn() { printf '%s[%s WARN]%s %s\n' "$C_YLW" "$(_stamp)" "$C_RST" "$*" | tee -a "$LOG_FILE" >&2; }
-die()  { printf '%s[%s FAIL]%s %s\n' "$C_RED" "$(_stamp)" "$C_RST" "$*" | tee -a "$LOG_FILE" >&2; exit 1; }
+log()  { printf '%s[%s INFO]%s %s\n' "$C_CYN" "$(_stamp)" "$C_RST" "$*" | _emit; }
+ok()   { printf '%s[%s  OK ]%s %s\n' "$C_GRN" "$(_stamp)" "$C_RST" "$*" | _emit; }
+warn() { printf '%s[%s WARN]%s %s\n' "$C_YLW" "$(_stamp)" "$C_RST" "$*" | _emit >&2; }
+die()  { printf '%s[%s FAIL]%s %s\n' "$C_RED" "$(_stamp)" "$C_RST" "$*" | _emit >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
@@ -333,10 +356,25 @@ sync_once() {
   commit_and_push
 }
 
+# 日志无人清理会一直长。按行数截断而非按大小，避免把一行日志切成两半；
+# 保留尾部即最近的记录，早期记录对排查已无价值
+readonly LOG_MAX_LINES="${AUTO_SYNC_LOG_MAX:-2000}"
+rotate_log() {
+  local n tmp
+  n=$(wc -l <"$LOG_FILE" 2>/dev/null || echo 0)
+  (( n > LOG_MAX_LINES )) || return 0
+  tmp=$(mktemp) || return 0
+  tail -n "$(( LOG_MAX_LINES / 2 ))" "$LOG_FILE" >"$tmp" 2>/dev/null &&
+    mv "$tmp" "$LOG_FILE" &&
+    log "日志已截断：${n} 行 → $(wc -l <"$LOG_FILE" | xargs) 行（上限 ${LOG_MAX_LINES}）"
+  rm -f "$tmp" 2>/dev/null || true
+}
+
 main() {
   parse_args "$@"
   mkdir -p "$(dirname "$LOG_FILE")"
   touch "$LOG_FILE"
+  rotate_log
 
   if [[ -n "$INSTALL_CRON" ]]; then
     manage_cron "$INSTALL_CRON"
