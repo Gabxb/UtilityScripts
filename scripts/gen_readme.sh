@@ -323,7 +323,8 @@ python3 scripts/probe_nodes.py sub.txt --alive alive.txt --report report.tsv
 
 # 自动同步
 bash scripts/auto_sync.sh                     # 同步一次
-bash scripts/auto_sync.sh --install-cron 30   # 每 30 分钟自动同步
+bash scripts/auto_sync.sh --install-cron 1440 # 每天自动同步一次（当前配置）
+bash scripts/auto_sync.sh --uninstall-cron    # 停掉定时同步
 bash scripts/auto_sync.sh --dry-run           # 预演
 \`\`\`
 

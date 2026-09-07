@@ -67,6 +67,7 @@ usage() {
 可选参数：
   --loop <秒>          自带循环，用于没有 cron 的环境（如精简容器）
   --install-cron <分>  安装 crontab 条目，每 N 分钟同步一次，并拉起 cron 守护进程
+                       传 1440 及以上按每天一次处理，落到随机时刻错峰
   --uninstall-cron     移除本脚本的 crontab 条目
   --run-pipeline "源…" 同步前先跑一次订阅流水线重新生成 sub.txt
   --with-report        同时提交 sub_report.tsv（内含真实出口 IP，公开仓库慎用）
@@ -253,13 +254,21 @@ manage_cron() {
     return 0
   fi
 
-  # 避开整点 0 分：所有人都写 0 分，错峰能减少同一时刻的集中请求
-  local offset=$(( (RANDOM % (minutes > 1 ? minutes : 2)) ))
-  local expr
-  if (( minutes >= 60 )); then
-    expr="${offset} */$(( minutes / 60 )) * * *"
+  # 避开整点 0 分与半点：这两个时刻人人都写，错峰能减少集中请求
+  local expr min hour
+  min=$(( RANDOM % 60 ))
+  (( min == 0 || min == 30 )) && min=7
+
+  if (( minutes >= 1440 )); then
+    # 一天及以上：固定到每天某个时刻。小时字段上限是 23，
+    # 原来一律写 */$((minutes/60))，minutes=1440 会得到 */24 —— 超出字段范围，
+    # 实际只在 0 点匹配，看着像"每天"其实是撞巧。这里直接落到具体小时
+    hour=$(( RANDOM % 24 ))
+    expr="${min} ${hour} * * *"
+  elif (( minutes >= 60 )); then
+    expr="${min} */$(( minutes / 60 )) * * *"
   else
-    expr="${offset}-59/${minutes} * * * *"
+    expr="${min}-59/${minutes} * * * *"
   fi
 
   {
@@ -268,7 +277,11 @@ manage_cron() {
     printf '%s cd %q && /usr/bin/env bash scripts/auto_sync.sh >> %q 2>&1\n' \
       "$expr" "$REPO_DIR" "$LOG_FILE"
   } | crontab -
-  ok "已写入 crontab：${expr}（每 ${minutes} 分钟）"
+  if (( minutes >= 1440 )); then
+    ok "已写入 crontab：${expr}（每天 $(printf '%02d:%02d' "$hour" "$min")）"
+  else
+    ok "已写入 crontab：${expr}（每 ${minutes} 分钟）"
+  fi
 
   pgrep -x cron >/dev/null 2>&1 || {
     cron 2>/dev/null && ok "已拉起 cron 守护进程" \

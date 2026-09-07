@@ -3,7 +3,7 @@
 订阅节点处理与自动化工具集：订阅清洗归一化、节点真实可用性探测、SSH 配置、自动同步。
 
 > 本文件由 `scripts/gen_readme.sh` 自动生成，环境信息实时采集，请勿手工编辑。
-> 最后更新：**2026-09-07 10:06:36 CST**（仅在环境信息实质变化时刷新，纯时间差异不会产生提交）
+> 最后更新：**2026-09-07 10:15:52 CST**（仅在环境信息实质变化时刷新，纯时间差异不会产生提交）
 
 ## 运行环境
 
@@ -13,7 +13,7 @@
 |---|---|
 | 时区 | Asia/Shanghai |
 | UTC 偏移 | UTC+08:00 |
-| 生成时刻 | 2026-09-07 10:06:36 CST ／ 2026-09-07 02:06:36 UTC |
+| 生成时刻 | 2026-09-07 10:15:52 CST ／ 2026-09-07 02:15:52 UTC |
 
 该环境无 systemd，`timedatectl` 不可用，时区通过符号链接设置：
 
@@ -123,8 +123,8 @@ echo "Asia/Shanghai" > /etc/timezone
 | `scripts/subs_pipeline.py` | 197 | 流水线入口：汇总 → 清洗 → 命名 → 探活 → 输出 |
 | `scripts/normalize_subs.py` | 452 | 解析、去广告、去重、国家识别（170+ 地区词、旗帜 emoji） |
 | `scripts/probe_nodes.py` | 539 | 双引擎探活，取真实出口 IP 与归属国家 |
-| `scripts/auto_sync.sh` | 349 | 幂等自动同步到 GitHub，本地优先，支持 cron |
-| `scripts/gen_readme.sh` | 410 | 生成本文件，环境信息实时采集 |
+| `scripts/auto_sync.sh` | 362 | 幂等自动同步到 GitHub，本地优先，支持 cron |
+| `scripts/gen_readme.sh` | 411 | 生成本文件，环境信息实时采集 |
 | `scripts/github-ssh-push.sh` | 439 | SSH/GPG 密钥生成、展示、验证与推送 |
 
 | 数据文件 | 规模 |
@@ -147,7 +147,8 @@ python3 scripts/probe_nodes.py sub.txt --alive alive.txt --report report.tsv
 
 # 自动同步
 bash scripts/auto_sync.sh                     # 同步一次
-bash scripts/auto_sync.sh --install-cron 30   # 每 30 分钟自动同步
+bash scripts/auto_sync.sh --install-cron 1440 # 每天自动同步一次（当前配置）
+bash scripts/auto_sync.sh --uninstall-cron    # 停掉定时同步
 bash scripts/auto_sync.sh --dry-run           # 预演
 ```
 
