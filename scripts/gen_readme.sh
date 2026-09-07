@@ -128,31 +128,34 @@ fetch_egress_ip() {
 
 # 境外出口是一个轮换代理池，粒度比想象的粗：实测同一天内命中过 AS4760 HKT、
 # AS138997 Eons、AS41378 Kirino（香港与台湾两地），连 /24 前缀都不稳定。
-# 所以具体 IP 或网段都不是可写入文档的事实 —— 写进去只会让每次 cron
-# 产出一个数字不同的空洞提交，正是本脚本开头要避免的噪音。
 #
-# 另外轮换有粘滞性：短时间内连续请求往往落在同一出口，单次运行只能看到池子的一角，
-# 直接报告本次采样会让"覆盖国家"在 Taiwan 和 Hong Kong、Taiwan 之间来回跳。
-# 因此把历次观察累积进本地状态文件，README 只报告累计并集 ——
-# 观察越多集合越稳定，文件也就不再变动。
-readonly POOL_FILE="${REPO_DIR}/.egress_pool.tsv"
-
+# 轮换还有粘滞性：短时间内连续请求往往落在同一出口，单次运行只能看到池子的一角。
+# 所以每次采样都并入存档，README 列出累计见过的全部 IP —— 观察越多越完整，
+# 集合趋于稳定后文件自然不再变动。
 for _ in $(seq 1 "${GEN_README_SAMPLES:-4}"); do
   ip=$(fetch_egress_ip)
   [[ -n "$ip" ]] || continue
-  grep -qF "	${ip}	" "$POOL_FILE" 2>/dev/null && continue
-  line=$(try 15 "curl -sS --max-time 12 'http://ip-api.com/line/${ip}?fields=country,as'")
-  c=$(printf '%s\n' "$line" | sed -n '1p'); a=$(printf '%s\n' "$line" | sed -n '2p')
-  [[ -n "$c" ]] && printf '%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d')" "$ip" "$c" "$a" >>"$POOL_FILE"
+  # 已在存档里只需更新日期，省掉一次 geoip 查询
+  if awk -F'\t' -v i="$ip" 'NF>=3 && $3==i{f=1} END{exit !f}' "$POOL_OV" 2>/dev/null; then
+    pool_record "$POOL_OV" "$ip" "" ""
+    continue
+  fi
+  geo=$(try 15 "curl -sS --max-time 12 'http://ip-api.com/line/${ip}?fields=country,regionName,city,as'")
+  c=$(printf '%s\n' "$geo" | sed -n '1p'); r=$(printf '%s\n' "$geo" | sed -n '2p')
+  y=$(printf '%s\n' "$geo" | sed -n '3p'); a=$(printf '%s\n' "$geo" | sed -n '4p')
+  loc=$(printf '%s' "${c} · ${r} · ${y}" | sed 's/ · $//; s/^ · //; s/ · $//')
+  [[ -n "$c" ]] && pool_record "$POOL_OV" "$ip" "$loc" "$a"
 done
 
-# 累计并集；排序去重保证渲染结果只随事实变化，不随采样顺序变化
-N_EGRESS=$(awk -F'\t' 'NF>=3{print $2}' "$POOL_FILE" 2>/dev/null | sort -u | grep -c . || true)
+# 累计统计；排序去重保证渲染结果只随事实变化，不随采样顺序变化
+OV_ROWS=$(pool_rows "$POOL_OV")
+N_EGRESS=$(awk -F'\t' 'NF>=3{print $3}' "$POOL_OV" 2>/dev/null | sort -u | grep -c . || true)
 # 用 awk 而非 paste -sd'、'：paste 的分隔符只取首字节，会把多字节的顿号截成乱码
 join_by() { awk -v sep="$1" 'NF{ out = out (n++ ? sep : "") $0 } END{ print out }'; }
-OV_COUNTRIES=$(awk -F'\t' 'NF>=3{print $3}' "$POOL_FILE" 2>/dev/null | sort -u | join_by '、' || true)
-OV_ASES=$(awk -F'\t' 'NF>=4&&$4!=""{print $4}' "$POOL_FILE" 2>/dev/null | sort -u | sed 's/^/`/; s/$/`/' | join_by '、' || true)
-OV_FIRST_SEEN=$(awk -F'\t' 'NF>=3{print $1}' "$POOL_FILE" 2>/dev/null | sort | head -1 || true)
+# 归属地首段即国家，取并集
+OV_COUNTRIES=$(awk -F'\t' 'NF>=4&&$4!=""{split($4, p, " · "); print p[1]}' "$POOL_OV" 2>/dev/null | sort -u | join_by '、' || true)
+OV_ASES=$(awk -F'\t' 'NF>=5&&$5!=""{print $5}' "$POOL_OV" 2>/dev/null | sort -u | sed 's/^/`/; s/$/`/' | join_by '、' || true)
+OV_FIRST_SEEN=$(awk -F'\t' 'NF>=3{print $1}' "$POOL_OV" 2>/dev/null | sort | head -1 || true)
 : "${OV_COUNTRIES:=采集失败}" "${OV_ASES:=采集失败}" "${N_EGRESS:=0}"
 
 # 工具版本，缺失则标未安装
@@ -221,24 +224,27 @@ echo "Asia/Shanghai" > /etc/timezone
 
 **境内线路出口** — \`curl cip.cc\`
 
-| 项目 | 值 |
-|---|---|
-| 出口 IP | \`${CN_IP}\` |
-| 归属地 | ${CN_LOC} |
-| 运营商 | ${CN_ISP} |
+当前出口 \`${CN_IP}\`（${CN_LOC} ／ ${CN_ISP}）。累计观察到 **${N_CN}** 个不同 IP，全部列出：
+
+| 出口 IP | 归属地 | 运营商 | 首次观察 | 最近观察 |
+|---|---|---|---|---|
+${CN_ROWS}
 
 **境外线路出口** — \`curl https://api.ipify.org\` 取 IP，\`ip-api.com\` 查归属
 
-境外出口是一个**轮换代理池**，每个请求都可能换一个地址，且跨多个 AS 与地区，连 \`/24\` 前缀都不固定。因此本节只记录轮换范围，不记录具体出口 IP。
+境外是一个**轮换代理池**，每个请求都可能换一个地址，跨多个 AS 与地区，连 \`/24\` 前缀都不固定。累计观察到 **${N_EGRESS}** 个不同 IP，全部列出：
 
-| 项目 | 值 |
+| 出口 IP | 归属地 | AS | 首次观察 | 最近观察 |
+|---|---|---|---|---|
+${OV_ROWS}
+
+| 汇总 | 值 |
 |---|---|
-| 出口稳定性 | 逐次轮换，短时间内有粘滞 |
-| 已观察到的出口数 | ${N_EGRESS} 个不同 IP（自 ${OV_FIRST_SEEN:-?} 起累计） |
 | 覆盖国家 / 地区 | ${OV_COUNTRIES} |
 | 覆盖 AS | ${OV_ASES} |
+| 观察起始 | ${OV_FIRST_SEEN:-?} |
 
-明细见 \`.egress_pool.tsv\`（本地累计，不入库）。
+存档在 \`.egress_pool.tsv\` 与 \`.egress_pool_cn.tsv\`（本地累计，不入库；上表由脚本从存档渲染）。
 
 **内网**
 
@@ -367,10 +373,12 @@ EOF
 # 否则每半小时一个只有 IP 差异的提交，README 历史会被彻底刷成噪音
 # 出口 IP 计数随每次采样缓慢增长，本身不算环境变化 —— 与时间戳同样排除。
 # 覆盖国家与 AS 则保留在比对内：那是真正影响探活解读的事实，变了就该提交
+# 出口表格里"最近观察"日期每天都会推进，那不是环境变化 —— 把每行末尾的
+# 日期列剔掉再比对，只有新 IP 出现或归属地变化才算实质差异，值得提交
 strip_volatile() {
   sed -E '/^> 最后更新：/d
           /^\| 生成时刻 \|/d
-          /^\| 已观察到的出口数 \|/d'
+          s/^(\| `([0-9]{1,3}\.){3}[0-9]{1,3}` \|.*\|) [0-9]{4}-[0-9]{2}-[0-9]{2} \|$/\1/'
 }
 
 NEW_CONTENT=$(render; render_tail)
