@@ -26,7 +26,8 @@ cd "$REPO_DIR"
 old_value() {
   local pattern="$1"
   [[ -f "$TARGET" ]] || return 0
-  grep -oE "$pattern" "$TARGET" 2>/dev/null | head -1 || true
+  # 必须用 -P：调用方的模式含后视断言 (?<=...)，-E 不支持 PCRE，会静默匹配不到
+  grep -oP "$pattern" "$TARGET" 2>/dev/null | head -1 || true
 }
 
 # 带超时的取值，失败返回空
@@ -48,7 +49,9 @@ CPU_CORES=$(nproc)
 MEM_TOTAL=$(free -h | awk '/^Mem:/{print $2}')
 DISK_TOTAL=$(df -h / | awk 'NR==2{print $2}')
 DISK_AVAIL=$(df -h / | awk 'NR==2{print $4}')
-LAN_IP=$(ip -4 addr show eth0 2>/dev/null | awk '/inet /{print $2; exit}')
+# eth0 上挂了多个地址（link-local 元数据地址 + 实际内网地址），全列出来，
+# 原来 exit 只取第一个，恰好取到 169.254 那个，看不出真实内网段
+LAN_IP=$(ip -4 addr show eth0 2>/dev/null | awk '/inet /{printf "`%s` ", $2}' | xargs || true)
 GATEWAY=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}')
 DNS_SRV=$(awk '/^nameserver/{printf "%s ", $2}' /etc/resolv.conf | xargs)
 
@@ -57,20 +60,62 @@ CN_RAW=$(try 15 'curl -sS --max-time 12 cip.cc')
 CN_IP=$(printf '%s' "$CN_RAW" | awk -F': *' '/^IP/{print $2; exit}' | xargs || true)
 CN_LOC=$(printf '%s' "$CN_RAW" | awk -F': *' '/^地址/{print $2; exit}' | xargs || true)
 CN_ISP=$(printf '%s' "$CN_RAW" | awk -F': *' '/^运营商/{print $2; exit}' | xargs || true)
-[[ -z "$CN_IP" ]] && CN_IP=$(old_value '123\.[0-9.]+|(?<=境内线路出口 \| `)[0-9.]+')
+# 三个字段一并回填：只补 IP 会渲染出"IP 有值、归属地采集失败"的自相矛盾表格
+if [[ -z "$CN_IP" ]]; then
+  CN_IP=$(old_value '(?<=\| 出口 IP \| `)[0-9]+(?:\.[0-9]+){3}')
+  CN_LOC=$(old_value '(?<=\| 归属地 \| )[^|]+' | xargs || true)
+  CN_ISP=$(old_value '(?<=\| 运营商 \| )[^|]+' | xargs || true)
+fi
 : "${CN_IP:=采集失败}" "${CN_LOC:=采集失败}" "${CN_ISP:=采集失败}"
 
-# 境外线路：ip.sb 返回 JSON，一次拿全
-OS_RAW=$(try 20 'curl -sS --max-time 15 https://api.ip.sb/geoip')
-jget() { printf '%s' "$OS_RAW" | grep -oE "\"$1\":\"[^\"]*\"" | head -1 | cut -d'"' -f4; }
-OV_IP=$(jget ip); OV_CITY=$(jget city); OV_REGION=$(jget region)
-OV_COUNTRY=$(jget country); OV_ISP=$(jget isp); OV_ASORG=$(jget asn_organization)
-OV_TZ=$(printf '%s' "$OS_RAW" | grep -oE '"timezone":"[^"]*"' | cut -d'"' -f4 | sed 's#\\/#/#g')
-OV_ASN=$(printf '%s' "$OS_RAW" | grep -oE '"asn":[0-9]+' | grep -oE '[0-9]+')
-[[ -z "$OV_IP" ]] && OV_IP=$(old_value '42\.200\.[0-9.]+')
-OV_PTR=$(try 10 "getent hosts ${OV_IP} | awk '{print \$2}'")
-: "${OV_IP:=采集失败}" "${OV_ISP:=未知}" "${OV_ASORG:=未知}" "${OV_TZ:=未知}"
-OV_LOC=$(printf '%s' "${OV_COUNTRY:-} · ${OV_REGION:-} · ${OV_CITY:-}" | sed 's/ · $//; s/^ · //')
+# 境外线路：先拿出口 IP，再查归属。
+#
+# 两处历史坑：
+#   · api.ip.sb 从 2026-09 起 TLS 握手就被打断（SSL_ERROR_SYSCALL），单点依赖不可取，
+#     这里改成多端点依次尝试，任一成功即止
+#   · jget 原来直接 grep，无匹配返回 1，在 set -e 下会让脚本当场退出 ——
+#     "采集失败沿用旧值" 的兜底逻辑永远走不到。所有取值一律以 || true 收尾
+fetch_egress_ip() {
+  local ep raw cand
+  for ep in 'https://api.ipify.org' 'https://www.cloudflare.com/cdn-cgi/trace' 'http://ip-api.com/line?fields=query'; do
+    raw=$(try 15 "curl -sS --max-time 12 '${ep}'")
+    # cloudflare trace 是 key=value 多行格式，其余两个直接返回裸 IP
+    cand=$(printf '%s' "$raw" | grep -oE '(^|ip=)([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1 | sed 's/^ip=//' || true)
+    [[ -n "$cand" ]] && { printf '%s' "$cand"; return 0; }
+  done
+  # 显式 return 0：全部端点失败时函数体最后一句是失败的 [[ -n ]]，
+  # 会把 1 当成返回值，在 set -e 下直接终止整个脚本。调用方靠空输出判断失败
+  return 0
+}
+
+# 境外出口是一个轮换代理池，粒度比想象的粗：实测同一天内命中过 AS4760 HKT、
+# AS138997 Eons、AS41378 Kirino（香港与台湾两地），连 /24 前缀都不稳定。
+# 所以具体 IP 或网段都不是可写入文档的事实 —— 写进去只会让每次 cron
+# 产出一个数字不同的空洞提交，正是本脚本开头要避免的噪音。
+#
+# 另外轮换有粘滞性：短时间内连续请求往往落在同一出口，单次运行只能看到池子的一角，
+# 直接报告本次采样会让"覆盖国家"在 Taiwan 和 Hong Kong、Taiwan 之间来回跳。
+# 因此把历次观察累积进本地状态文件，README 只报告累计并集 ——
+# 观察越多集合越稳定，文件也就不再变动。
+readonly POOL_FILE="${REPO_DIR}/.egress_pool.tsv"
+
+for _ in $(seq 1 "${GEN_README_SAMPLES:-4}"); do
+  ip=$(fetch_egress_ip)
+  [[ -n "$ip" ]] || continue
+  grep -qF "	${ip}	" "$POOL_FILE" 2>/dev/null && continue
+  line=$(try 15 "curl -sS --max-time 12 'http://ip-api.com/line/${ip}?fields=country,as'")
+  c=$(printf '%s\n' "$line" | sed -n '1p'); a=$(printf '%s\n' "$line" | sed -n '2p')
+  [[ -n "$c" ]] && printf '%s\t%s\t%s\t%s\n' "$(date '+%Y-%m-%d')" "$ip" "$c" "$a" >>"$POOL_FILE"
+done
+
+# 累计并集；排序去重保证渲染结果只随事实变化，不随采样顺序变化
+N_EGRESS=$(awk -F'\t' 'NF>=3{print $2}' "$POOL_FILE" 2>/dev/null | sort -u | grep -c . || true)
+# 用 awk 而非 paste -sd'、'：paste 的分隔符只取首字节，会把多字节的顿号截成乱码
+join_by() { awk -v sep="$1" 'NF{ out = out (n++ ? sep : "") $0 } END{ print out }'; }
+OV_COUNTRIES=$(awk -F'\t' 'NF>=3{print $3}' "$POOL_FILE" 2>/dev/null | sort -u | join_by '、' || true)
+OV_ASES=$(awk -F'\t' 'NF>=4&&$4!=""{print $4}' "$POOL_FILE" 2>/dev/null | sort -u | sed 's/^/`/; s/$/`/' | join_by '、' || true)
+OV_FIRST_SEEN=$(awk -F'\t' 'NF>=3{print $1}' "$POOL_FILE" 2>/dev/null | sort | head -1 || true)
+: "${OV_COUNTRIES:=采集失败}" "${OV_ASES:=采集失败}" "${N_EGRESS:=0}"
 
 # 工具版本，缺失则标未安装
 ver() { command -v "$1" >/dev/null 2>&1 && eval "$2" || echo "未安装"; }
@@ -144,22 +189,24 @@ echo "Asia/Shanghai" > /etc/timezone
 | 归属地 | ${CN_LOC} |
 | 运营商 | ${CN_ISP} |
 
-**境外线路出口** — \`curl https://api.ip.sb/geoip\`
+**境外线路出口** — \`curl https://api.ipify.org\` 取 IP，\`ip-api.com\` 查归属
+
+境外出口是一个**轮换代理池**，每个请求都可能换一个地址，且跨多个 AS 与地区，连 \`/24\` 前缀都不固定。因此本节只记录轮换范围，不记录具体出口 IP。
 
 | 项目 | 值 |
 |---|---|
-| 出口 IP | \`${OV_IP}\` |
-| 反向解析 | ${OV_PTR:-无} |
-| 归属地 | ${OV_LOC} |
-| ISP | ${OV_ISP} |
-| AS | AS${OV_ASN:-?} ${OV_ASORG} |
-| IP 时区 | ${OV_TZ} |
+| 出口稳定性 | 逐次轮换，短时间内有粘滞 |
+| 已观察到的出口数 | ${N_EGRESS} 个不同 IP（自 ${OV_FIRST_SEEN:-?} 起累计） |
+| 覆盖国家 / 地区 | ${OV_COUNTRIES} |
+| 覆盖 AS | ${OV_ASES} |
+
+明细见 \`.egress_pool.tsv\`（本地累计，不入库）。
 
 **内网**
 
 | 项目 | 值 |
 |---|---|
-| eth0 | \`${LAN_IP}\` |
+| eth0 | ${LAN_IP} |
 | 默认网关 | \`${GATEWAY}\` |
 | DNS | \`${DNS_SRV}\` |
 EOF
@@ -174,15 +221,19 @@ cat <<EOF
 | 协议 / 目标 | 状态 | 判定依据 |
 |---|---|---|
 | ICMP | **完全禁止** | \`8.8.8.8\`、\`1.1.1.1\` 均 100% 丢包，与保留地址 \`192.0.2.1\` 无差异 |
-| TCP 22（GitHub） | **被拦截** | \`kex_exchange_identification: Connection closed\`，改走 \`ssh.github.com:443\` |
 | TCP connect | **结果不可信** | 保留地址 \`192.0.2.1:12345\` 也返回连接成功，上游有透明代理应答 SYN |
-| HTTPS 443 | 正常 | 任意端口出站可用 |
-| google / youtube | 可达 | 走境外线路，HTTP 200 约 0.8 s |
-| facebook / twitter | 超时 | 环境自身出站策略，与 GFW 无关 |
+| TCP 22（GitHub） | 可用 | \`ssh -T git@github.com\` 认证成功，早期被拦截的情况已不复现 |
+| TCP 443（ssh.github.com） | 认证失败 | 端口通，但该 host 未配对应 key，报 \`Permission denied (publickey)\` |
+| HTTPS 443 | 部分可用 | 出站端口不受限，但个别站点在 TLS 握手阶段被打断 |
+| google / youtube | 可达 | 走境外线路，HTTP 200 约 0.3～0.5 s |
+| facebook / twitter | **TLS 握手被打断** | \`SSL_ERROR_SYSCALL\`，非超时；环境自身出站策略 |
+| api.ip.sb / api.myip.com | **TLS 握手被打断** | 同上，故 geoip 改用 \`ip-api.com\` 明文接口 |
 
 所以节点可用性只能靠**完整协议握手 + 真实 HTTP 请求**验证，ICMP 与 TCP 层探测在此环境全部无效。
 
-境内线路虽然存在，但**不能用来测 GFW** —— 分流由上游按目标 IP 决定，境外节点的连接必然走香港线路。
+境内线路虽然存在，但**不能用来测 GFW** —— 分流由上游按目标 IP 决定，境外节点的连接必然走境外线路。
+
+境外出口是轮换池，同一节点在不同时刻可能经由不同国家、不同 AS 的出口去连接，探活结果因此存在天然抖动，比较跨天的 \`sub_alive.txt\` 时需留意这一点。
 
 ### 已安装工具
 
@@ -245,7 +296,7 @@ bash scripts/auto_sync.sh --dry-run           # 预演
 
 ## 注意事项
 
-- 探活结果反映**境外线路出口（${OV_IP}）**到节点的连通性，不代表中国大陆可达性
+- 探活结果反映**境外轮换出口**到节点的连通性，不代表中国大陆可达性；出口每次请求都可能变化，跨天结果不可直接对比
 - 探活并发上限为 3，超过后代理连接会被关闭，导致健康节点被误判
 - 回显服务必须用 HTTPS，明文 HTTP 会被部分节点出口拦截返回 400 页面
 - \`sub_report.tsv\` 含节点真实出口 IP，默认不纳入版本控制
@@ -274,7 +325,15 @@ EOF
 }
 # ---------------------------------------------------------------- 写入
 # 比对时剔除时间戳行：否则每次 cron 都会因为分钟数不同而产生一个空洞提交
-strip_volatile() { sed -E '/^> 最后更新：/d; /^\| 生成时刻 \|/d'; }
+# 出口 IP 逐次轮换，"本次采样"和采样命中数每回都不同，必须与时间戳一样排除，
+# 否则每半小时一个只有 IP 差异的提交，README 历史会被彻底刷成噪音
+# 出口 IP 计数随每次采样缓慢增长，本身不算环境变化 —— 与时间戳同样排除。
+# 覆盖国家与 AS 则保留在比对内：那是真正影响探活解读的事实，变了就该提交
+strip_volatile() {
+  sed -E '/^> 最后更新：/d
+          /^\| 生成时刻 \|/d
+          /^\| 已观察到的出口数 \|/d'
+}
 
 NEW_CONTENT=$(render; render_tail)
 
@@ -301,5 +360,5 @@ fi
 printf '%s\n' "$NEW_CONTENT" >"$TARGET"
 echo "README.md 已更新（$(wc -l <"$TARGET" | xargs) 行）"
 echo "  境内出口 ${CN_IP} / ${CN_LOC}"
-echo "  境外出口 ${OV_IP} / ${OV_LOC}"
+echo "  境外出口 轮换池 ${N_EGRESS} 个 IP / ${OV_COUNTRIES}"
 echo "  节点数据 sub.txt ${N_SUB} 个，可用 ${N_ALIVE} 个"

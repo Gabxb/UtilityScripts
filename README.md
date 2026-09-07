@@ -3,7 +3,7 @@
 订阅节点处理与自动化工具集：订阅清洗归一化、节点真实可用性探测、SSH 配置、自动同步。
 
 > 本文件由 `scripts/gen_readme.sh` 自动生成，环境信息实时采集，请勿手工编辑。
-> 最后更新：**2026-08-30 19:48:28 CST**（仅在环境信息实质变化时刷新，纯时间差异不会产生提交）
+> 最后更新：**2026-09-07 09:32:08 CST**（仅在环境信息实质变化时刷新，纯时间差异不会产生提交）
 
 ## 运行环境
 
@@ -13,7 +13,7 @@
 |---|---|
 | 时区 | Asia/Shanghai |
 | UTC 偏移 | UTC+08:00 |
-| 生成时刻 | 2026-08-30 19:48:28 CST ／ 2026-08-30 11:48:28 UTC |
+| 生成时刻 | 2026-09-07 09:32:08 CST ／ 2026-09-07 01:32:08 UTC |
 
 该环境无 systemd，`timedatectl` 不可用，时区通过符号链接设置：
 
@@ -47,22 +47,24 @@ echo "Asia/Shanghai" > /etc/timezone
 | 归属地 | 中国 北京 北京 |
 | 运营商 | 阿里云 |
 
-**境外线路出口** — `curl https://api.ip.sb/geoip`
+**境外线路出口** — `curl https://api.ipify.org` 取 IP，`ip-api.com` 查归属
+
+境外出口是一个**轮换代理池**，每个请求都可能换一个地址，且跨多个 AS 与地区，连 `/24` 前缀都不固定。因此本节只记录轮换范围，不记录具体出口 IP。
 
 | 项目 | 值 |
 |---|---|
-| 出口 IP | `42.200.172.140` |
-| 反向解析 | 42-200-172-140.static.imsbiz.com |
-| 归属地 | Hong Kong · Central and Western · Central |
-| ISP | Netvigator |
-| AS | AS4760 HKT Limited |
-| IP 时区 | Asia/Hong_Kong |
+| 出口稳定性 | 逐次轮换，短时间内有粘滞 |
+| 已观察到的出口数 | 11 个不同 IP（自 2026-08-30 起累计） |
+| 覆盖国家 / 地区 | Hong Kong、Taiwan |
+| 覆盖 AS | `AS138997 Eons Data Communications Limited`、`AS41378 Kirino LLC`、`AS4760 HKT Limited` |
+
+明细见 `.egress_pool.tsv`（本地累计，不入库）。
 
 **内网**
 
 | 项目 | 值 |
 |---|---|
-| eth0 | `169.254.169.252/30` |
+| eth0 | `169.254.169.252/30` `192.168.20.159/20` |
 | 默认网关 | `192.168.16.1` |
 | DNS | `192.168.16.1` |
 
@@ -73,15 +75,19 @@ echo "Asia/Shanghai" > /etc/timezone
 | 协议 / 目标 | 状态 | 判定依据 |
 |---|---|---|
 | ICMP | **完全禁止** | `8.8.8.8`、`1.1.1.1` 均 100% 丢包，与保留地址 `192.0.2.1` 无差异 |
-| TCP 22（GitHub） | **被拦截** | `kex_exchange_identification: Connection closed`，改走 `ssh.github.com:443` |
 | TCP connect | **结果不可信** | 保留地址 `192.0.2.1:12345` 也返回连接成功，上游有透明代理应答 SYN |
-| HTTPS 443 | 正常 | 任意端口出站可用 |
-| google / youtube | 可达 | 走境外线路，HTTP 200 约 0.8 s |
-| facebook / twitter | 超时 | 环境自身出站策略，与 GFW 无关 |
+| TCP 22（GitHub） | 可用 | `ssh -T git@github.com` 认证成功，早期被拦截的情况已不复现 |
+| TCP 443（ssh.github.com） | 认证失败 | 端口通，但该 host 未配对应 key，报 `Permission denied (publickey)` |
+| HTTPS 443 | 部分可用 | 出站端口不受限，但个别站点在 TLS 握手阶段被打断 |
+| google / youtube | 可达 | 走境外线路，HTTP 200 约 0.3～0.5 s |
+| facebook / twitter | **TLS 握手被打断** | `SSL_ERROR_SYSCALL`，非超时；环境自身出站策略 |
+| api.ip.sb / api.myip.com | **TLS 握手被打断** | 同上，故 geoip 改用 `ip-api.com` 明文接口 |
 
 所以节点可用性只能靠**完整协议握手 + 真实 HTTP 请求**验证，ICMP 与 TCP 层探测在此环境全部无效。
 
-境内线路虽然存在，但**不能用来测 GFW** —— 分流由上游按目标 IP 决定，境外节点的连接必然走香港线路。
+境内线路虽然存在，但**不能用来测 GFW** —— 分流由上游按目标 IP 决定，境外节点的连接必然走境外线路。
+
+境外出口是轮换池，同一节点在不同时刻可能经由不同国家、不同 AS 的出口去连接，探活结果因此存在天然抖动，比较跨天的 `sub_alive.txt` 时需留意这一点。
 
 ### 已安装工具
 
@@ -92,7 +98,7 @@ echo "Asia/Shanghai" > /etc/timezone
 | sing-box | 1.13.20 | 探活主引擎（vless/trojan/ss/hysteria2） |
 | Xray-core | 26.3.27 | 探活第二引擎（xhttp、Reality 原生） |
 | OpenSSH | OpenSSH_9.2p1 | SSH 推送 |
-| OpenSSL | 3.0.19 | TLS 握手检测 |
+| OpenSSL | 3.0.20 | TLS 握手检测 |
 | curl | 7.88.1 | 出口 IP 探测 |
 | cron | 3.0pl1-162 | 定时同步（守护进程需手动拉起） |
 
@@ -103,8 +109,8 @@ echo "Asia/Shanghai" > /etc/timezone
 | `scripts/subs_pipeline.py` | 197 | 流水线入口：汇总 → 清洗 → 命名 → 探活 → 输出 |
 | `scripts/normalize_subs.py` | 452 | 解析、去广告、去重、国家识别（170+ 地区词、旗帜 emoji） |
 | `scripts/probe_nodes.py` | 539 | 双引擎探活，取真实出口 IP 与归属国家 |
-| `scripts/auto_sync.sh` | 340 | 幂等自动同步到 GitHub，本地优先，支持 cron |
-| `scripts/gen_readme.sh` | 305 | 生成本文件，环境信息实时采集 |
+| `scripts/auto_sync.sh` | 349 | 幂等自动同步到 GitHub，本地优先，支持 cron |
+| `scripts/gen_readme.sh` | 364 | 生成本文件，环境信息实时采集 |
 | `scripts/github-ssh-push.sh` | 439 | SSH/GPG 密钥生成、展示、验证与推送 |
 
 | 数据文件 | 规模 |
@@ -144,7 +150,7 @@ bash scripts/auto_sync.sh --dry-run           # 预演
 
 ## 注意事项
 
-- 探活结果反映**境外线路出口（42.200.172.140）**到节点的连通性，不代表中国大陆可达性
+- 探活结果反映**境外轮换出口**到节点的连通性，不代表中国大陆可达性；出口每次请求都可能变化，跨天结果不可直接对比
 - 探活并发上限为 3，超过后代理连接会被关闭，导致健康节点被误判
 - 回显服务必须用 HTTPS，明文 HTTP 会被部分节点出口拦截返回 400 页面
 - `sub_report.tsv` 含节点真实出口 IP，默认不纳入版本控制

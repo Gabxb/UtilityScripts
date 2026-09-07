@@ -295,11 +295,20 @@ refresh_readme() {
     log "[dry-run] 将刷新 README.md"
     return 0
   fi
-  local out
-  if out=$(bash "$gen" 2>&1); then
+  local out rc
+  out=$(bash "$gen" 2>&1) && rc=0 || rc=$?
+  if (( rc == 0 )); then
     log "README: $(printf '%s' "$out" | head -1)"
+    return 0
+  fi
+  # 原来只记 tail -1：脚本在 set -e 下中途退出时末行往往是空的，
+  # 日志里只剩一句没有下文的"生成失败"，白丢了 8 天的诊断线索。
+  # 现在记退出码 + 全部输出（逐行加前缀，避免多行日志串行难读）
+  warn "README 生成失败（退出码 ${rc}）"
+  if [[ -n "$out" ]]; then
+    printf '%s\n' "$out" | while IFS= read -r l; do warn "  | ${l}"; done
   else
-    warn "README 生成失败：$(printf '%s' "$out" | tail -1)"
+    warn "  | 无任何输出，脚本可能在采集阶段被 set -e 中断"
   fi
 }
 
