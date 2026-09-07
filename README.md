@@ -3,7 +3,7 @@
 订阅节点处理与自动化工具集：订阅清洗归一化、节点真实可用性探测、SSH 配置、自动同步。
 
 > 本文件由 `scripts/gen_readme.sh` 自动生成，环境信息实时采集，请勿手工编辑。
-> 最后更新：**2026-09-07 09:32:08 CST**（仅在环境信息实质变化时刷新，纯时间差异不会产生提交）
+> 最后更新：**2026-09-07 10:04:04 CST**（仅在环境信息实质变化时刷新，纯时间差异不会产生提交）
 
 ## 运行环境
 
@@ -13,7 +13,7 @@
 |---|---|
 | 时区 | Asia/Shanghai |
 | UTC 偏移 | UTC+08:00 |
-| 生成时刻 | 2026-09-07 09:32:08 CST ／ 2026-09-07 01:32:08 UTC |
+| 生成时刻 | 2026-09-07 10:04:04 CST ／ 2026-09-07 02:04:04 UTC |
 
 该环境无 systemd，`timedatectl` 不可用，时区通过符号链接设置：
 
@@ -54,9 +54,9 @@ echo "Asia/Shanghai" > /etc/timezone
 | 项目 | 值 |
 |---|---|
 | 出口稳定性 | 逐次轮换，短时间内有粘滞 |
-| 已观察到的出口数 | 11 个不同 IP（自 2026-08-30 起累计） |
-| 覆盖国家 / 地区 | Hong Kong、Taiwan |
-| 覆盖 AS | `AS138997 Eons Data Communications Limited`、`AS41378 Kirino LLC`、`AS4760 HKT Limited` |
+| 已观察到的出口数 | 2 个不同 IP（自 2026-08-30 起累计） |
+| 覆盖国家 / 地区 | 103.156.242.194、212.107.28.50、212.107.28.51、212.107.28.55、212.107.28.57、212.107.28.58、212.107.29.67、212.107.29.70、42.200.172.140、45.62.172.81、45.62.172.83 |
+| 覆盖 AS | `Hong Kong · Central and Western · Central`、`Hong Kong · Kowloon · Hong Kong`、`Hong Kong · Yau Tsim Mong · Tsim Sha Tsui`、`Taiwan · Taiwan · Taipei` |
 
 明细见 `.egress_pool.tsv`（本地累计，不入库）。
 
@@ -110,7 +110,7 @@ echo "Asia/Shanghai" > /etc/timezone
 | `scripts/normalize_subs.py` | 452 | 解析、去广告、去重、国家识别（170+ 地区词、旗帜 emoji） |
 | `scripts/probe_nodes.py` | 539 | 双引擎探活，取真实出口 IP 与归属国家 |
 | `scripts/auto_sync.sh` | 349 | 幂等自动同步到 GitHub，本地优先，支持 cron |
-| `scripts/gen_readme.sh` | 364 | 生成本文件，环境信息实时采集 |
+| `scripts/gen_readme.sh` | 402 | 生成本文件，环境信息实时采集 |
 | `scripts/github-ssh-push.sh` | 439 | SSH/GPG 密钥生成、展示、验证与推送 |
 
 | 数据文件 | 规模 |

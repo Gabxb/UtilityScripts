@@ -55,18 +55,56 @@ LAN_IP=$(ip -4 addr show eth0 2>/dev/null | awk '/inet /{printf "`%s` ", $2}' | 
 GATEWAY=$(ip route 2>/dev/null | awk '/^default/{print $3; exit}')
 DNS_SRV=$(awk '/^nameserver/{printf "%s ", $2}' /etc/resolv.conf | xargs)
 
+# ---------------------------------------------------------------- 出口历史
+# 两条线路的出口 IP 都完整存档，README 里全部列出，不做省略。
+# 格式：首次观察日期 \t 最近观察日期 \t IP \t 归属地 \t AS 或运营商
+#
+# 用两个日期而非一个：出口 IP 会复现，只记首次看不出它是否还在用，
+# 只记最近又丢掉了"什么时候第一次见到"这个信息。
+readonly POOL_CN="${REPO_DIR}/.egress_pool_cn.tsv"
+readonly POOL_OV="${REPO_DIR}/.egress_pool.tsv"
+readonly TODAY=$(date '+%Y-%m-%d')
+
+# 把一次观察并入存档：已存在则只更新"最近观察"日期，新 IP 追加一行。
+# 用临时文件 + mv 而非原地 sed，避免写入中断时把存档截断
+pool_record() {
+  local file="$1" ip="$2" loc="$3" org="$4" tmp
+  [[ -n "$ip" ]] || return 0
+  touch "$file"
+  if awk -F'\t' -v ip="$ip" 'NF>=3 && $3==ip{found=1} END{exit !found}' "$file"; then
+    tmp=$(mktemp)
+    awk -F'\t' -v OFS='\t' -v ip="$ip" -v d="$TODAY" \
+      'NF>=3 && $3==ip{$2=d} {print}' "$file" >"$tmp" && mv "$tmp" "$file"
+  else
+    printf '%s\t%s\t%s\t%s\t%s\n' "$TODAY" "$TODAY" "$ip" "$loc" "$org" >>"$file"
+  fi
+}
+
+# 渲染存档为 markdown 表格行，按首次观察日期正序、同日按 IP 数值序，保证输出稳定
+pool_rows() {
+  sort -t$'\t' -k1,1 -k3,3V "$1" 2>/dev/null | awk -F'\t' 'NF>=3{
+    printf "| `%s` | %s | %s | %s | %s |\n", $3, ($4?$4:"未知"), ($5?$5:"未知"), $1, $2
+  }'
+}
+
 # 境内线路：cip.cc 是文本格式，取 IP 与地址行
 CN_RAW=$(try 15 'curl -sS --max-time 12 cip.cc')
 CN_IP=$(printf '%s' "$CN_RAW" | awk -F': *' '/^IP/{print $2; exit}' | xargs || true)
 CN_LOC=$(printf '%s' "$CN_RAW" | awk -F': *' '/^地址/{print $2; exit}' | xargs || true)
 CN_ISP=$(printf '%s' "$CN_RAW" | awk -F': *' '/^运营商/{print $2; exit}' | xargs || true)
-# 三个字段一并回填：只补 IP 会渲染出"IP 有值、归属地采集失败"的自相矛盾表格
+pool_record "$POOL_CN" "$CN_IP" "$CN_LOC" "$CN_ISP"
+# 三个字段一并回填：只补 IP 会渲染出"IP 有值、归属地采集失败"的自相矛盾表格。
+# 存档里最近观察日期最新的那条即上次成功采集的结果，比正则抠 README 更可靠
 if [[ -z "$CN_IP" ]]; then
-  CN_IP=$(old_value '(?<=\| 出口 IP \| `)[0-9]+(?:\.[0-9]+){3}')
-  CN_LOC=$(old_value '(?<=\| 归属地 \| )[^|]+' | xargs || true)
-  CN_ISP=$(old_value '(?<=\| 运营商 \| )[^|]+' | xargs || true)
+  # IFS 必须设成 tab：归属地形如"中国 北京 北京"含空格，默认按空格切会拆散
+  IFS=$'\t' read -r CN_IP CN_LOC CN_ISP < <(
+    sort -t$'\t' -k2,2r "$POOL_CN" 2>/dev/null |
+      awk -F'\t' 'NF>=3{print $3"\t"$4"\t"$5; exit}'
+  ) || true
 fi
 : "${CN_IP:=采集失败}" "${CN_LOC:=采集失败}" "${CN_ISP:=采集失败}"
+CN_ROWS=$(pool_rows "$POOL_CN")
+N_CN=$(awk -F'\t' 'NF>=3{print $3}' "$POOL_CN" 2>/dev/null | sort -u | grep -c . || true)
 
 # 境外线路：先拿出口 IP，再查归属。
 #
