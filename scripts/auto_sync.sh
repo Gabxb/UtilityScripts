@@ -9,10 +9,12 @@
 #   · 串行 —— flock 加锁，cron 周期短于单次耗时也不会重叠执行
 #
 # 用法：
-#   bash scripts/auto_sync.sh                     # 同步一次
-#   bash scripts/auto_sync.sh --loop 1800         # 无 cron 环境下自带循环
-#   bash scripts/auto_sync.sh --install-cron 30   # 装 crontab，每 30 分钟一次
-#   bash scripts/auto_sync.sh --dry-run           # 只看会做什么，不提交不推送
+#   bash scripts/auto_sync.sh                       # 同步一次
+#   bash scripts/auto_sync.sh --loop 1800           # 无 cron 环境下自带循环
+#   bash scripts/auto_sync.sh --install-cron 1440   # 装 crontab，每天一次（当前配置）
+#   bash scripts/auto_sync.sh --uninstall-cron      # 移除 crontab 条目
+#   bash scripts/auto_sync.sh --run-pipeline sub.md # 同步前先重跑订阅流水线
+#   bash scripts/auto_sync.sh --dry-run             # 只看会做什么，不提交不推送
 #
 set -euo pipefail
 
@@ -60,12 +62,14 @@ fi
 # 所以先比较 stdout 与日志文件的 inode，已经是同一个文件就不再 tee。
 # 不能直接 stat /dev/stdout：命令替换 $(...) 本身会把 stdout 接成管道，
 # 探到的永远是那个管道（device 12 pipefs）而不是真正的输出目标。
-# 先把 fd 1 复制到 fd 9，子进程继承后再 stat /proc/self/fd/9 才能看到原始目标
+# 先把 fd 1 复制到一个空闲描述符，子进程继承后再 stat /proc/self/fd/N 才能看到原始目标。
+# 这里用 fd 8 而不是 9：fd 9 归 main 里的 flock 长期占用，两处复用同一个
+# 描述符的话，一旦将来有人在中间插入代码，锁会静默失效而不是报错
 _same_file() {
   local a b
-  exec 9>&1 || return 1
-  a=$(stat -Lc '%d:%i' /proc/self/fd/9 2>/dev/null) || true
-  exec 9>&-
+  exec 8>&1 || return 1
+  a=$(stat -Lc '%d:%i' /proc/self/fd/8 2>/dev/null) || true
+  exec 8>&-
   b=$(stat -Lc '%d:%i' "$LOG_FILE" 2>/dev/null) || true
   [[ -n "$a" && "$a" == "$b" ]]
 }
@@ -99,17 +103,26 @@ usage() {
   -h, --help           显示帮助
 
 环境变量：
-  AUTO_SYNC_REPO    仓库路径（默认取脚本所在仓库）
-  AUTO_SYNC_BRANCH  目标分支（默认 main）
-  AUTO_SYNC_LOG     日志路径（默认 <仓库>/.auto_sync.log）
+  AUTO_SYNC_REPO     仓库路径（默认取脚本所在仓库）
+  AUTO_SYNC_BRANCH   目标分支（默认 main）
+  AUTO_SYNC_LOG      日志路径（默认 <仓库>/.auto_sync.log）
+  AUTO_SYNC_LOG_MAX  日志行数上限，超过则截半保留尾部（默认 2000）
 EOF
+}
+
+# 参数校验：非数字进到 (( )) 里会被当成变量名，set -u 下报
+# "abc: unbound variable"，错误信息完全指不到真正的原因
+num_or_die() {
+  [[ "$2" =~ ^[0-9]+$ ]] || die "${1} 需要正整数，收到：${2}"
 }
 
 parse_args() {
   while (( $# )); do
     case "$1" in
-      --loop)          LOOP_SECONDS="${2:?缺少秒数}"; shift 2 ;;
-      --install-cron)  INSTALL_CRON="${2:?缺少分钟数}"; shift 2 ;;
+      --loop)          num_or_die --loop "${2:?缺少秒数}"
+                       LOOP_SECONDS="$2"; shift 2 ;;
+      --install-cron)  num_or_die --install-cron "${2:?缺少分钟数}"
+                       INSTALL_CRON="$2"; shift 2 ;;
       --uninstall-cron) INSTALL_CRON="remove"; shift ;;
       --run-pipeline)  RUN_PIPELINE="${2:?缺少订阅来源}"; shift 2 ;;
       --with-report)   WITH_REPORT=1; shift ;;
@@ -123,6 +136,7 @@ parse_args() {
   return 0
 }
 # ---------------------------------------------------------------- 前置检查
+# 只做本地检查。凡是需要网络的判断都不放这里 —— 见下面的 ssh_ready
 preflight() {
   [[ -d "$REPO_DIR/.git" ]] || die "不是 git 仓库：${REPO_DIR}"
   cd "$REPO_DIR"
@@ -134,16 +148,37 @@ preflight() {
 
   git remote get-url origin >/dev/null 2>&1 || die "未配置 origin 远端"
 
-  # cron 环境没有 ssh-agent，依赖 ~/.ssh/config 里的 IdentityFile + 无密码密钥
-  local probe
-  probe=$(ssh -T -o BatchMode=yes -o ConnectTimeout=15 git@github.com 2>&1 || true)
-  [[ "$probe" == *"successfully authenticated"* ]] \
-    || die "SSH 认证失败，无法推送：${probe}
-若密钥设了密码短语，cron 环境无法解锁，请改用无密码短语的部署密钥。"
-
   # 提交身份必须存在，否则 commit 会失败
   git config user.name  >/dev/null || die "未配置 user.name（git config user.name <名字>）"
   git config user.email >/dev/null || die "未配置 user.email"
+}
+
+# SSH 可用性探测，且刻意不是硬失败。
+#
+# 原来这段写在 preflight 里直接 die：网络抖一下，README 采集和订阅流水线
+# 也一起丢了 —— 而这两件事根本不需要网络出得去。现在探测结果只决定是否
+# 跳过 fetch/push，本地该做的照做，提交留在本地，下一轮连同本次一起推。
+# 一次运行只探一次：结果缓存进 SSH_STATE，loop 模式下不会反复握手
+SSH_STATE=""
+SSH_PROBE=""
+ssh_ready() {
+  if [[ -z "$SSH_STATE" ]]; then
+    # cron 环境没有 ssh-agent，依赖 ~/.ssh/config 里的 IdentityFile + 无密码密钥
+    SSH_PROBE=$(ssh -T -o BatchMode=yes -o ConnectTimeout=15 git@github.com 2>&1 || true)
+    if [[ "$SSH_PROBE" == *"successfully authenticated"* ]]; then
+      SSH_STATE=0
+    else
+      SSH_STATE=1
+      # 密钥问题和网络问题的处置完全不同，提示要分得开
+      case "$SSH_PROBE" in
+        *"publickey"* | *"Permission denied"*)
+          warn "SSH 认证被拒，密钥未被 GitHub 接受。若密钥设了密码短语，cron 环境无法解锁，请改用无密码短语的部署密钥" ;;
+        *) warn "SSH 连不上 github.com（多为网络问题，会自行恢复）" ;;
+      esac
+      warn "  | ${SSH_PROBE:-无输出}"
+    fi
+  fi
+  return "$SSH_STATE"
 }
 
 # 与远端对齐：远端有新提交时 rebase，产物文件冲突一律取本地
@@ -195,18 +230,21 @@ sync_with_remote() {
   fi
 }
 # ---------------------------------------------------------------- 提交与推送
-# 只暂存白名单里确实存在且有变化的文件
+# 只暂存白名单里确实存在且有变化的文件。
+# 顺手记下实际暂存了哪些 —— dry-run 回滚时只动这几个，不碰别人的暂存区
+STAGED_FILES=()
 stage_changes() {
-  local staged=0 file
+  local file
+  STAGED_FILES=()
   for file in "${TRACKED[@]}"; do
     [[ -e "$file" ]] || continue
     if ! git diff --quiet HEAD -- "$file" 2>/dev/null || \
        [[ -n "$(git ls-files --others --exclude-standard -- "$file")" ]]; then
       git add -- "$file"
-      staged=1
+      STAGED_FILES+=("$file")
     fi
   done
-  (( staged ))
+  (( ${#STAGED_FILES[@]} ))
 }
 
 commit_and_push() {
@@ -221,7 +259,9 @@ commit_and_push() {
 
   if (( DRY_RUN )); then
     log "[dry-run] 将提交并推送到 origin/${BRANCH}：${summary}"
-    git reset --quiet HEAD -- . 2>/dev/null || true
+    # 只回滚自己刚暂存的那几个文件。原来是 git reset HEAD -- .，作用域是整个
+    # 仓库 —— --dry-run 号称什么都不改，实际会清掉用户手工 add 的内容
+    git reset --quiet HEAD -- "${STAGED_FILES[@]}" 2>/dev/null || true
     return 0
   fi
 
@@ -229,6 +269,13 @@ commit_and_push() {
   msg="chore: sync subscription output $(date '+%Y-%m-%d %H:%M %Z')"
   git commit --quiet -m "$msg" || die "git commit 失败"
   ok "已提交：$(git log -1 --oneline)"
+
+  # 推送需要网络，本地提交不需要。SSH 不通时提交先落地，
+  # 下一轮 cron 会把积压的提交一起推上去，采集结果不会丢
+  if ! ssh_ready; then
+    warn "SSH 不可用，已本地提交但未推送，下一轮会连同本次一起推"
+    return 0
+  fi
 
   if git push --quiet origin "$BRANCH" 2>/dev/null; then
     ok "推送成功 → origin/${BRANCH}（${summary}）"
@@ -262,6 +309,13 @@ readonly CRON_MARK="# auto_sync.sh (managed)"
 manage_cron() {
   local minutes="$1"
   if ! command -v crontab >/dev/null 2>&1; then
+    # 卸载路径要在算术之前提前返回：minutes 此时是字符串 remove，
+    # $((minutes * 60)) 会在 set -u 下报 "remove: unbound variable"，
+    # 把真正该给出的提示整条顶掉
+    if [[ "$minutes" == "remove" ]]; then
+      ok "系统没有 crontab，也就没有条目可移除"
+      return 0
+    fi
     warn "系统没有 crontab。Debian/Ubuntu 装法：apt-get install -y cron"
     warn "容器里没有 systemd，装完需手动拉起守护进程：cron"
     warn "不想装 cron 的话，用自带循环：bash scripts/auto_sync.sh --loop $((minutes * 60)) &"
@@ -350,9 +404,16 @@ refresh_readme() {
 
 sync_once() {
   preflight
+  # 先与远端对齐，再生成 README。反过来的话 README 是按旧基线算出来的，
+  # 远端刚动过同一个文件时反而要走"冲突取本地"那条路，白折腾一轮 rebase。
+  # SSH 不通就跳过这一步：本地采集与提交照做，不受网络牵连
+  if ssh_ready; then
+    sync_with_remote
+  else
+    warn "跳过与远端对齐，本轮只做本地采集与提交"
+  fi
   if (( GEN_README )); then refresh_readme; fi
   [[ -n "$RUN_PIPELINE" ]] && run_pipeline "$RUN_PIPELINE"
-  sync_with_remote
   commit_and_push
 }
 

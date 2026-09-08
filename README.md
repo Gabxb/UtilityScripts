@@ -3,7 +3,7 @@
 订阅节点处理与自动化工具集：订阅清洗归一化、节点真实可用性探测、SSH 配置、自动同步。
 
 > 本文件由 `scripts/gen_readme.sh` 自动生成，环境信息实时采集，请勿手工编辑。
-> 最后更新：**2026-09-07 10:15:52 CST**（仅在环境信息实质变化时刷新，纯时间差异不会产生提交）
+> 最后更新：**2026-09-07 10:54:14 CST**（仅在环境信息实质变化时刷新，纯时间差异不会产生提交）
 
 ## 运行环境
 
@@ -13,7 +13,7 @@
 |---|---|
 | 时区 | Asia/Shanghai |
 | UTC 偏移 | UTC+08:00 |
-| 生成时刻 | 2026-09-07 10:15:52 CST ／ 2026-09-07 02:15:52 UTC |
+| 生成时刻 | 2026-09-07 10:54:14 CST ／ 2026-09-07 02:54:14 UTC |
 
 该环境无 systemd，`timedatectl` 不可用，时区通过符号链接设置：
 
@@ -49,7 +49,7 @@ echo "Asia/Shanghai" > /etc/timezone
 
 **境外线路出口** — `curl https://api.ipify.org` 取 IP，`ip-api.com` 查归属
 
-境外是一个**轮换代理池**，每个请求都可能换一个地址，跨多个 AS 与地区，连 `/24` 前缀都不固定。累计观察到 **12** 个不同 IP，全部列出：
+境外是一个**轮换代理池**，每个请求都可能换一个地址，跨多个 AS 与地区，连 `/24` 前缀都不固定。累计观察到 **14** 个不同 IP，全部列出：
 
 | 出口 IP | 归属地 | AS | 首次观察 | 最近观察 |
 |---|---|---|---|---|
@@ -57,6 +57,8 @@ echo "Asia/Shanghai" > /etc/timezone
 | `45.62.172.81` | Hong Kong · Yau Tsim Mong · Tsim Sha Tsui | AS138997 Eons Data Communications Limited | 2026-09-07 | 2026-09-07 |
 | `45.62.172.83` | Hong Kong · Yau Tsim Mong · Tsim Sha Tsui | AS138997 Eons Data Communications Limited | 2026-09-07 | 2026-09-07 |
 | `103.156.242.194` | Taiwan · Taiwan · Taipei | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
+| `103.156.242.196` | Taiwan · Taiwan · Taipei | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
+| `103.156.242.197` | Taiwan · Taiwan · Taipei | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
 | `212.107.28.50` | Hong Kong · Kowloon · Hong Kong | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
 | `212.107.28.51` | Hong Kong · Kowloon · Hong Kong | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
 | `212.107.28.55` | Hong Kong · Kowloon · Hong Kong | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
@@ -114,7 +116,7 @@ echo "Asia/Shanghai" > /etc/timezone
 | OpenSSH | OpenSSH_9.2p1 | SSH 推送 |
 | OpenSSL | 3.0.20 | TLS 握手检测 |
 | curl | 7.88.1 | 出口 IP 探测 |
-| cron | 3.0pl1-162 | 定时同步（守护进程需手动拉起） |
+| cron | 3.0pl1-162 | 定时同步（每天一次；重启后用 `pgrep -x cron` 确认） |
 
 ## 仓库内容
 
@@ -123,8 +125,8 @@ echo "Asia/Shanghai" > /etc/timezone
 | `scripts/subs_pipeline.py` | 197 | 流水线入口：汇总 → 清洗 → 命名 → 探活 → 输出 |
 | `scripts/normalize_subs.py` | 452 | 解析、去广告、去重、国家识别（170+ 地区词、旗帜 emoji） |
 | `scripts/probe_nodes.py` | 539 | 双引擎探活，取真实出口 IP 与归属国家 |
-| `scripts/auto_sync.sh` | 362 | 幂等自动同步到 GitHub，本地优先，支持 cron |
-| `scripts/gen_readme.sh` | 411 | 生成本文件，环境信息实时采集 |
+| `scripts/auto_sync.sh` | 461 | 幂等自动同步到 GitHub，本地优先，支持 cron |
+| `scripts/gen_readme.sh` | 422 | 生成本文件，环境信息实时采集 |
 | `scripts/github-ssh-push.sh` | 439 | SSH/GPG 密钥生成、展示、验证与推送 |
 
 | 数据文件 | 规模 |

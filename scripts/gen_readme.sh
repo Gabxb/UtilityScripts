@@ -22,6 +22,17 @@ TO_STDOUT=0
 
 cd "$REPO_DIR"
 
+# 串行化整个脚本。出口存档是"读—改—写"（见 pool_record 的 mktemp + mv），
+# 两个实例同时跑会互相覆盖丢掉存档行 —— 而那是用户要求完整保留的 IP 历史。
+# README 写入同理。用阻塞式 flock 而非 -n：调用方要的是一份最新 README，
+# 排队等几秒比直接跳过有意义。用 fd 7 而非 9：auto_sync.sh 的锁占着 fd 9，
+# 本脚本作为子进程会继承它，错开描述符免得两把锁纠缠
+readonly LOCK_FILE="/tmp/gen_readme_$(printf '%s' "$REPO_DIR" | md5sum | cut -c1-12).lock"
+if command -v flock >/dev/null 2>&1; then
+  exec 7>"$LOCK_FILE"
+  flock -w 120 7 || echo "等锁超时，仍继续（存档可能与另一实例冲突）" >&2
+fi
+
 # 从现有 README 里取回某个字段的旧值，供采集失败时兜底
 old_value() {
   local pattern="$1"
@@ -290,7 +301,7 @@ cat <<EOF
 | OpenSSH | ${V_SSH} | SSH 推送 |
 | OpenSSL | ${V_SSL} | TLS 握手检测 |
 | curl | ${V_CURL} | 出口 IP 探测 |
-| cron | ${V_CRON} | 定时同步（守护进程需手动拉起） |
+| cron | ${V_CRON} | 定时同步（每天一次；重启后用 \`pgrep -x cron\` 确认） |
 
 ## 仓库内容
 
