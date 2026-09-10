@@ -3,7 +3,7 @@
 订阅节点处理与自动化工具集：订阅清洗归一化、节点真实可用性探测、SSH 配置、自动同步。
 
 > 本文件由 `scripts/gen_readme.sh` 自动生成，环境信息实时采集，请勿手工编辑。
-> 最后更新：**2026-09-07 10:54:14 CST**（仅在环境信息实质变化时刷新，纯时间差异不会产生提交）
+> 最后更新：**2026-09-11 06:43:07 CST**（仅在环境信息实质变化时刷新，纯时间差异不会产生提交）
 
 ## 运行环境
 
@@ -13,7 +13,7 @@
 |---|---|
 | 时区 | Asia/Shanghai |
 | UTC 偏移 | UTC+08:00 |
-| 生成时刻 | 2026-09-07 10:54:14 CST ／ 2026-09-07 02:54:14 UTC |
+| 生成时刻 | 2026-09-11 06:43:07 CST ／ 2026-09-10 22:43:07 UTC |
 
 该环境无 systemd，`timedatectl` 不可用，时区通过符号链接设置：
 
@@ -45,16 +45,16 @@ echo "Asia/Shanghai" > /etc/timezone
 
 | 出口 IP | 归属地 | 运营商 | 首次观察 | 最近观察 |
 |---|---|---|---|---|
-| `123.56.157.253` | 中国 北京 北京 | 阿里云 | 2026-08-30 | 2026-09-07 |
+| `123.56.157.253` | 中国 北京 北京 | 阿里云 | 2026-08-30 | 2026-09-11 |
 
 **境外线路出口** — `curl https://api.ipify.org` 取 IP，`ip-api.com` 查归属
 
-境外是一个**轮换代理池**，每个请求都可能换一个地址，跨多个 AS 与地区，连 `/24` 前缀都不固定。累计观察到 **14** 个不同 IP，全部列出：
+境外是一个**轮换代理池**，每个请求都可能换一个地址，跨多个 AS 与地区，连 `/24` 前缀都不固定。累计观察到 **15** 个不同 IP，全部列出：
 
 | 出口 IP | 归属地 | AS | 首次观察 | 最近观察 |
 |---|---|---|---|---|
 | `42.200.172.140` | Hong Kong · Central and Western · Central | AS4760 HKT Limited | 2026-08-30 | 2026-08-30 |
-| `45.62.172.81` | Hong Kong · Yau Tsim Mong · Tsim Sha Tsui | AS138997 Eons Data Communications Limited | 2026-09-07 | 2026-09-07 |
+| `45.62.172.81` | Hong Kong · Yau Tsim Mong · Tsim Sha Tsui | AS138997 Eons Data Communications Limited | 2026-09-07 | 2026-09-10 |
 | `45.62.172.83` | Hong Kong · Yau Tsim Mong · Tsim Sha Tsui | AS138997 Eons Data Communications Limited | 2026-09-07 | 2026-09-07 |
 | `103.156.242.194` | Taiwan · Taiwan · Taipei | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
 | `103.156.242.196` | Taiwan · Taiwan · Taipei | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
@@ -62,11 +62,12 @@ echo "Asia/Shanghai" > /etc/timezone
 | `212.107.28.50` | Hong Kong · Kowloon · Hong Kong | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
 | `212.107.28.51` | Hong Kong · Kowloon · Hong Kong | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
 | `212.107.28.55` | Hong Kong · Kowloon · Hong Kong | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
-| `212.107.28.56` | Hong Kong · Kowloon · Hong Kong | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
+| `212.107.28.56` | Hong Kong · Kowloon · Hong Kong | AS41378 Kirino LLC | 2026-09-07 | 2026-09-09 |
 | `212.107.28.57` | Hong Kong · Kowloon · Hong Kong | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
 | `212.107.28.58` | Hong Kong · Kowloon · Hong Kong | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
 | `212.107.29.67` | Hong Kong · Kowloon · Hong Kong | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
 | `212.107.29.70` | Hong Kong · Kowloon · Hong Kong | AS41378 Kirino LLC | 2026-09-07 | 2026-09-07 |
+| `103.156.242.195` | Taiwan · Taiwan · Taipei | AS41378 Kirino LLC | 2026-09-11 | 2026-09-11 |
 
 | 汇总 | 值 |
 |---|---|
