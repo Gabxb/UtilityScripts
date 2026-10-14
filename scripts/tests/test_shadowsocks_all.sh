@@ -230,6 +230,43 @@ order=$(install_main 2> /dev/null | sed '/^$/d' | grep -v 'Welcome to visit\|Enj
 check 'rust dispatch' 'rust_install libev_plugin rust_config rust_start rust_done rust_qr ' "${order}"
 
 echo
+echo '== EOL releases switch to the archive before the first update =='
+apt_update(){ return 0; }
+ARCHIVE_MODE=0
+APT_OPTS=()
+APT_SOURCELIST="${TMP}/archive2.list"
+os_release_file=$(mkos debian 10 buster 'Debian GNU/Linux 10 (buster)')
+detect_distro
+ensure_apt_works > /dev/null 2>&1
+check 'buster: archive mode set up front' '1' "${ARCHIVE_MODE}"
+check 'buster: archive list written' 'yes' "$(grep -q 'archive.debian.org/debian buster main' "${TMP}/archive2.list" && echo yes || echo no)"
+check 'buster: apt opts applied' 'yes' "$(printf '%s\n' "${APT_OPTS[@]}" | grep -q "Dir::Etc::sourcelist=${TMP}/archive2.list" && echo yes || echo no)"
+
+ARCHIVE_MODE=0
+APT_OPTS=()
+os_release_file=$(mkos debian 12 bookworm 'Debian GNU/Linux 12 (bookworm)')
+detect_distro
+ensure_apt_works > /dev/null 2>&1
+check 'bookworm: distro sources kept' '0' "${ARCHIVE_MODE}"
+
+ARCHIVE_MODE=0
+APT_OPTS=()
+os_release_file=$(mkos debian 11 bullseye 'Debian GNU/Linux 11 (bullseye)')
+detect_distro
+ensure_apt_works > /dev/null 2>&1
+check 'bullseye: distro sources kept' '0' "${ARCHIVE_MODE}"
+
+echo
+echo '== diagnose_apt_state smoke test =='
+ARCHIVE_MODE=1
+APT_SOURCELIST="${TMP}/archive2.list"
+APT_OPTS=(-o "Dir::Etc::sourcelist=${TMP}/archive2.list" -o "Dir::Etc::sourceparts=-" -o "Acquire::Check-Valid-Until=false")
+diag=$(diagnose_apt_state 2>&1)
+check 'diagnostics banner printed' 'yes' "$(printf '%s' "${diag}" | grep -q 'APT diagnostics' && echo yes || echo no)"
+check 'diagnostics show archive mode' 'yes' "$(printf '%s' "${diag}" | grep -q 'archive mode' && echo yes || echo no)"
+check 'diagnostics show apt policy' 'yes' "$(printf '%s' "${diag}" | grep -q 'apt-cache policy' && echo yes || echo no)"
+
+echo
 echo "PASS=${pass} FAIL=${fail}"
 [ "${fail}" -eq 0 ]
 

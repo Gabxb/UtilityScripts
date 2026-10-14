@@ -15,6 +15,7 @@ wget --no-check-certificate -O shadowsocks-all.sh \
 chmod +x shadowsocks-all.sh
 
 ./shadowsocks-all.sh check       # 只探测系统，不安装
+./shadowsocks-all.sh diagnose    # check + 完整 APT 状态（源、policy、dry-run）
 ./shadowsocks-all.sh install 2>&1 | tee shadowsocks-all.log
 ./shadowsocks-all.sh uninstall
 ```
@@ -42,6 +43,9 @@ SS_CIPHER=aes-256-gcm SS_PLUGIN=None \
 | 9 | `ufw status` 在未启用时也返回 0，导致上游脚本误判 | `ufw status` 退出码不反映状态 | 改为匹配 `Status: active` |
 | 10 | `get_char` 在无 `/dev/tty` 时报错；交互式 `read` 在无 TTY 时永久阻塞 | — | 两者均做了无 TTY 兜底 |
 | 11 | `wget` 不一定存在 | — | 下载统一走 `curl`，缺 curl 时回退 `wget` |
+| 12 | **apt 的所有报错都被 `>/dev/null 2>&1` 吞掉**，装不上时完全看不出原因 | 用户实测：`[Error] Shadowsocks-libev installation failed.` 无任何细节 | 新增 `apt_install_checked`，失败时把 apt 输出（末 40 行）打到 stderr；并新增 `diagnose` 动作输出源列表、`apt-cache policy`、`apt-get --dry-run` |
+| 13 | **只在 `apt-get update` 失败时才切归档源**，若系统 sources 为空/残缺，`update` 会"成功"，随后 Teddysun 包的依赖（libsodium23、libev4…）全都装不上，最终以"安装失败"收场 | 用户环境为 Debian 10 且未出现 EOL 警告 → 说明 update 返回 0，但依赖无法解析 | 改为**在首次 update 之前**就为 EOL 发行版接入 `archive.debian.org`（依赖也来自那里），不再依赖"update 失败"这一信号 |
+| 14 | 安装失败后没有回退 | — | libev 安装改为 4 级回退：① apt 自行选版（Teddysun 最新）→ ② `-t <代号>-backports` → ③ `-t <代号>`（发行版自带包）→ ④ `apt-get -f install` 修复依赖后重试；仍失败则打印诊断信息 |
 
 ## 各版本最终安装来源
 

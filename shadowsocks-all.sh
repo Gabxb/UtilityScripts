@@ -324,6 +324,24 @@ apt_install(){
     DEBIAN_FRONTEND=noninteractive apt-get "${APT_OPTS[@]}" -y "$@"
 }
 
+# Same as apt_install, but the output is captured and printed when the command
+# fails.  The upstream script redirected everything to /dev/null, which made an
+# install failure impossible to diagnose.
+apt_install_checked(){
+    local log rc
+    log=$(mktemp)
+    DEBIAN_FRONTEND=noninteractive apt-get "${APT_OPTS[@]}" -y "$@" > "${log}" 2>&1
+    rc=$?
+    if [ "${rc}" -ne 0 ]; then
+        {
+            log_warn "apt-get -y $* failed (exit ${rc}):"
+            sed 's/^/    /' "${log}" | tail -n 40
+        } >&2
+    fi
+    rm -f "${log}"
+    return "${rc}"
+}
+
 apt_purge(){
     DEBIAN_FRONTEND=noninteractive apt-get "${APT_OPTS[@]}" -y purge "$@"
 }
@@ -370,10 +388,20 @@ EOF
 }
 
 ensure_apt_works(){
+    # Debian 9/10 are EOL: deb.debian.org no longer serves their suites and,
+    # more importantly, the *dependencies* of the packages installed below live
+    # there too.  So wire up archive.debian.org up front instead of waiting for
+    # apt-get update to fail -- on a host with an empty sources.list the update
+    # "succeeds" and every later install then dies with unmet dependencies.
+    if [ "${DISTRO_ID}" = 'debian' ] && [ "${ARCHIVE_MODE}" = '0' ] \
+        && debian_release_is_archived "${DISTRO_CODENAME}"; then
+        setup_archive_apt_sources "${DISTRO_CODENAME}"
+    fi
     log_info 'Refreshing APT package lists...'
     if apt_update; then
         return 0
     fi
+    # Last chance: the release may have gone EOL and only the probe can tell.
     if [ "${DISTRO_ID}" = 'debian' ] && [ "${ARCHIVE_MODE}" = '0' ] \
         && debian_release_is_archived "${DISTRO_CODENAME}"; then
         setup_archive_apt_sources "${DISTRO_CODENAME}"
@@ -390,7 +418,7 @@ ensure_apt_works(){
 # ---------------------------------------------------------------------------
 ensure_base_tools(){
     # ca-certificates must be present before any https fetch (GPG key, repo).
-    apt_install ca-certificates curl gnupg > /dev/null 2>&1
+    apt_install_checked ca-certificates curl gnupg
     if ! has_command curl && ! has_command wget; then
         log_error 'Neither curl nor wget is available and none could be installed.'
         return 1
@@ -798,7 +826,7 @@ plugin_arch(){
 # ---------------------------------------------------------------------------
 install_dependencies(){
     log_info 'Installing helper packages (qrencode, xz-utils)...'
-    apt_install qrencode xz-utils > /dev/null 2>&1
+    apt_install_checked qrencode xz-utils
 }
 
 installed_libev_version(){
@@ -807,28 +835,36 @@ installed_libev_version(){
 
 install_shadowsocks_libev(){
     log_info "Installing ${software[0]}..."
-    local ok=0 version
+    local version
 
-    # Debian 9 has no Teddysun suite.  Its *-backports suite ships libev 3.2.5
-    # (full AEAD support) while the plain suite only has the AEAD-less 2.6.3,
-    # so try backports first.
-    if [ "${DISTRO_ID}" = 'debian' ] && [ "${ARCHIVE_MODE}" = '1' ] \
-        && [ "${TEDDYSUN_SUITE_OK}" = '0' ] && [ -n "${DISTRO_CODENAME}" ]; then
-        if apt_install -t "${DISTRO_CODENAME}-backports" shadowsocks-libev > /dev/null 2>&1; then
-            ok=1
-        fi
-    fi
-
-    # Otherwise let apt resolve the version by itself.  With the Teddysun repo
-    # enabled this picks the newest build (3.3.6 on bullseye/bookworm/trixie,
-    # 3.3.5 on buster).  The upstream script pinned an exact version and always
-    # failed on buster, because buster never shipped 3.3.6-2.
-    if [ "${ok}" = '0' ]; then
-        apt_install shadowsocks-libev > /dev/null 2>&1 && ok=1
+    # 1) Preferred: let apt resolve the version by itself.  With the Teddysun
+    #    repository enabled this picks the newest build (3.3.6 on bullseye/
+    #    bookworm/trixie, 3.3.5 on buster).  The upstream script pinned an exact
+    #    version and always failed on buster, which never shipped 3.3.6-2.
+    if apt_install_checked shadowsocks-libev && [ -x /usr/bin/ss-server ]; then
+        :
+    # 2) Debian 9 has no Teddysun suite.  Its *-backports suite ships libev
+    #    3.2.5 (full AEAD support) while the plain suite only has the AEAD-less
+    #    2.6.3, so try backports before the plain suite.
+    elif [ "${DISTRO_ID}" = 'debian' ] && [ -n "${DISTRO_CODENAME}" ] \
+        && apt_install_checked -t "${DISTRO_CODENAME}-backports" shadowsocks-libev \
+        && [ -x /usr/bin/ss-server ]; then
+        :
+    # 3) Fall back to the distribution's own build.
+    elif [ -n "${DISTRO_CODENAME}" ] \
+        && apt_install_checked -t "${DISTRO_CODENAME}" shadowsocks-libev \
+        && [ -x /usr/bin/ss-server ]; then
+        :
+    else
+        # 4) Last resort: repair the dependency graph and retry.
+        log_warn 'Retrying after repairing the APT dependency graph...'
+        apt_install_checked -f install
+        apt_install_checked shadowsocks-libev
     fi
 
     if [ ! -x /usr/bin/ss-server ]; then
-        die "${software[0]} installation failed."
+        diagnose_apt_state
+        die "${software[0]} installation failed, see the APT diagnostics above."
     fi
     version=$(installed_libev_version)
     [ -n "${version}" ] && log_info "${software[0]} ${version} installed."
@@ -883,7 +919,8 @@ install_shadowsocks_rust(){
         log_info "${software[1]} installed from the package repository."
         return 0
     fi
-    log_warn 'No shadowsocks-rust package available, falling back to the GitHub build.'
+    log_warn 'shadowsocks-rust is not installable from the repositories here;'
+    log_warn 'falling back to the official GitHub build (static musl binary).'
     install_rust_from_github
 }
 
@@ -921,7 +958,8 @@ install_plugin(){
     if apt_install "${plugin_name}" > /dev/null 2>&1 && [ -x "/usr/bin/${plugin_name}" ]; then
         return 0
     fi
-    log_warn "No ${plugin_name} package available, falling back to the GitHub build."
+    log_warn "${plugin_name} is not installable from the repositories here;"
+    log_warn 'falling back to the official GitHub build (static binary).'
     install_plugin_from_github "${plugin_name}" || die "${plugin_name} installation failed."
 }
 
@@ -1328,6 +1366,38 @@ uninstall_shadowsocks(){
 # ---------------------------------------------------------------------------
 # Diagnostics / entry point
 # ---------------------------------------------------------------------------
+# Printed when a package cannot be installed: shows everything the upstream
+# script used to hide behind /dev/null.
+diagnose_apt_state(){
+    local f
+    {
+        echo
+        echo '================= APT diagnostics ================='
+        echo "# distribution   : ${DISTRO_ID} ${DISTRO_VERSION_ID} (${DISTRO_CODENAME:-unknown})"
+        echo "# archive mode   : ${ARCHIVE_MODE}   (1 = using archive.debian.org)"
+        echo "# teddysun suite : ${TEDDYSUN_SUITE_OK}   (1 = suite exists)"
+        echo "# extra apt opts : ${APT_OPTS[*]:-<none>}"
+        echo '# /etc/apt/sources.list'
+        grep -vE '^[[:space:]]*(#|$)' /etc/apt/sources.list 2> /dev/null | sed 's/^/    /'
+        for f in /etc/apt/sources.list.d/*.list; do
+            [ -e "${f}" ] || continue
+            echo "# ${f}"
+            grep -vE '^[[:space:]]*(#|$)' "${f}" 2> /dev/null | sed 's/^/    /'
+        done
+        if [ "${ARCHIVE_MODE}" = '1' ]; then
+            echo "# ${APT_SOURCELIST}"
+            grep -vE '^[[:space:]]*(#|$)' "${APT_SOURCELIST}" 2> /dev/null | sed 's/^/    /'
+        fi
+        echo '# apt-cache policy shadowsocks-libev'
+        apt-cache "${APT_OPTS[@]}" policy shadowsocks-libev 2>&1 | sed 's/^/    /'
+        echo '# apt-get install --dry-run shadowsocks-libev'
+        DEBIAN_FRONTEND=noninteractive apt-get "${APT_OPTS[@]}" -y --dry-run install shadowsocks-libev 2>&1 \
+            | tail -n 30 | sed 's/^/    /'
+        echo '==================================================='
+        echo
+    } >&2
+}
+
 check_system(){
     local arch distro
     detect_distro
@@ -1381,6 +1451,7 @@ Actions:
   install     Install Shadowsocks-libev or Shadowsocks-rust (default)
   uninstall   Remove a previously installed server
   check       Print the detected system information, change nothing
+  diagnose    Same as check plus the full APT state (sources, policy, dry-run)
   help        Show this message
 
 Unattended install environment variables:
@@ -1399,7 +1470,7 @@ main(){
             [[ ${EUID} -ne 0 ]] && die 'This script must be run as root!'
             detect_distro
             ;;
-        check|info|help|-h|--help)
+        check|info|diagnose|help|-h|--help)
             detect_distro
             ;;
         *)
@@ -1413,6 +1484,7 @@ main(){
         install)        install_shadowsocks ;;
         uninstall)      uninstall_shadowsocks ;;
         check|info)     check_system ;;
+        diagnose)       check_system; diagnose_apt_state ;;
         help|-h|--help) usage ;;
     esac
 }
